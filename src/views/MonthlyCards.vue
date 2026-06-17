@@ -226,21 +226,21 @@
 
         <el-table :data="historyList" stripe max-height="360" style="margin-top: 16px">
           <el-table-column prop="createdAt" label="时间" width="160" />
-          <el-table-column label="类型" width="100">
+          <el-table-column label="类型" width="80">
             <template #default="{ row }">
               <el-tag v-if="row.type === 'use'" type="danger" effect="light" size="small">扣减</el-tag>
               <el-tag v-else-if="row.type === 'issue'" type="success" effect="light" size="small">发放</el-tag>
               <el-tag v-else type="info" effect="light" size="small">重置</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="变动时长" width="120">
+          <el-table-column label="变动时长" width="110">
             <template #default="{ row }">
               <span :class="row.type === 'use' ? 'positive' : 'negative'">
                 {{ row.type === 'use' ? '-' : '+' }}{{ formatDuration(Math.abs(row.changeMinutes)) }}
               </span>
             </template>
           </el-table-column>
-          <el-table-column label="抵扣金额" width="110">
+          <el-table-column label="抵扣金额" width="100">
             <template #default="{ row }">
               <span v-if="row.deductedAmount && row.deductedAmount > 0" style="color:#f56c6c">
                 -¥{{ row.deductedAmount.toFixed(2) }}
@@ -255,10 +255,18 @@
               <span style="color:#409eff; font-weight: 600">{{ formatDuration(row.balanceAfter) }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="remark" label="备注" min-width="160">
+          <el-table-column label="关联账单" width="160">
+            <template #default="{ row }">
+              <template v-if="row.type === 'use' && row.detailId">
+                <span style="color:#909399; font-size:12px; margin-right:6px">{{ getDetailIdShort(row.detailId) }}</span>
+                <el-button type="primary" size="small" link @click="openLinkedReceipt(row)">小票</el-button>
+              </template>
+              <span v-else style="color:#c0c4cc">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="remark" label="备注" min-width="130">
             <template #default="{ row }">
               <span v-if="row.remark">{{ row.remark }}</span>
-              <span v-else-if="row.type === 'use' && row.detailId" style="color:#c0c4cc">账单已关联</span>
               <span v-else style="color:#c0c4cc">-</span>
             </template>
           </el-table-column>
@@ -301,15 +309,21 @@
         <el-button type="success" @click="confirmIssue">确认发放</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="linkedReceiptVisible" title="关联小票详情" width="620px" destroy-on-close>
+      <ParkingReceipt v-if="linkedReceiptData" :data="linkedReceiptData" />
+      <el-empty v-else description="未找到关联账单" />
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import type { MonthlyCard, QuotaTransaction } from '@/types'
-import { cardStorage, quotaTransactionStorage } from '@/store/storage'
+import type { MonthlyCard, QuotaTransaction, ConsumptionDetail } from '@/types'
+import { cardStorage, quotaTransactionStorage, detailStorage } from '@/store/storage'
 import { issueMonthlyQuota, resetAllQuotasForNewMonth } from '@/services/quotaManager'
+import ParkingReceipt from '@/components/ParkingReceipt.vue'
 
 const cards = ref<MonthlyCard[]>([])
 const searchKw = ref('')
@@ -327,6 +341,8 @@ const currentCard = ref<MonthlyCard | null>(null)
 const issueMinutes = ref(600)
 const historyList = ref<QuotaTransaction[]>([])
 const historyStats = reactive({ issued: 0, used: 0, amount: 0 })
+const linkedReceiptVisible = ref(false)
+const linkedReceiptData = ref<ConsumptionDetail | null>(null)
 
 const form = reactive({
   cardNo: '',
@@ -466,11 +482,27 @@ function openIssueDialog(row: MonthlyCard) {
 
 function openHistoryDialog(row: MonthlyCard) {
   currentCard.value = { ...row }
-  historyList.value = quotaTransactionStorage.getByCardId(row.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  historyList.value = (quotaTransactionStorage.getByCardId(row.id) || []).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   historyStats.issued = historyList.value.filter(t => t.type === 'issue').reduce((s, t) => s + Math.abs(t.changeMinutes), 0)
   historyStats.used = historyList.value.filter(t => t.type === 'use').reduce((s, t) => s + Math.abs(t.changeMinutes), 0)
   historyStats.amount = historyList.value.reduce((s, t) => s + (t.deductedAmount || 0), 0)
   historyVisible.value = true
+}
+
+function getDetailIdShort(detailId: string): string {
+  if (!detailId) return '-'
+  return 'BL' + detailId.substring(0, 6)
+}
+
+function openLinkedReceipt(row: QuotaTransaction) {
+  if (!row.detailId) return
+  const detail = detailStorage.getAll().find(d => d.id === row.detailId)
+  if (detail) {
+    linkedReceiptData.value = detail
+    linkedReceiptVisible.value = true
+  } else {
+    ElMessage.warning('关联账单未找到')
+  }
 }
 
 function confirmIssue() {

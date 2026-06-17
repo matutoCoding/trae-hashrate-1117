@@ -77,7 +77,8 @@
         </el-col>
       </el-row>
 
-      <el-table :data="filteredDetails" stripe max-height="520">
+      <el-table ref="detailTableRef" :data="filteredDetails" stripe max-height="520" @selection-change="handleSelectionChange">
+        <el-table-column type="selection" width="40" />
         <el-table-column prop="plateNumber" label="车牌号" width="110">
           <template #default="{ row }">
             <span style="font-family: monospace; font-weight: 600">{{ row.plateNumber }}</span>
@@ -166,18 +167,59 @@
       </el-table>
 
       <el-empty v-if="filteredDetails.length === 0" description="暂无消费明细数据" style="padding: 40px 0" />
+      <div style="margin-top: 12px; display: flex; gap: 8px" v-if="selectedDetails.length > 0">
+        <el-tag type="info">已选 {{ selectedDetails.length }} 条</el-tag>
+        <el-button type="primary" size="small" @click="batchPrintReceipt">补打小票</el-button>
+        <el-button type="success" size="small" @click="exportReconciliation">导出对账单</el-button>
+      </div>
     </el-card>
 
     <el-dialog v-model="receiptVisible" title="收费小票" width="600px" destroy-on-close>
       <ParkingReceipt v-if="currentDetail" :data="currentDetail" />
     </el-dialog>
+
+    <el-dialog v-model="batchReceiptVisible" title="对账单汇总" width="800px" destroy-on-close>
+      <div v-if="exportData.rows.length > 0" style="padding: 0 0 16px 0">
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="记录数">{{ exportData.rows.length }} 笔</el-descriptions-item>
+          <el-descriptions-item label="应收合计">¥{{ exportData.grossTotal.toFixed(2) }}</el-descriptions-item>
+          <el-descriptions-item label="实收合计">¥{{ exportData.payTotal.toFixed(2) }}</el-descriptions-item>
+          <el-descriptions-item label="免费抵扣">-¥{{ exportData.freeTotal.toFixed(2) }}</el-descriptions-item>
+          <el-descriptions-item label="额度抵扣">-¥{{ exportData.quotaTotal.toFixed(2) }}</el-descriptions-item>
+        </el-descriptions>
+        <el-table :data="exportData.rows" stripe max-height="400" style="margin-top: 12px">
+          <el-table-column prop="plateNumber" label="车牌" width="100" />
+          <el-table-column label="入→出" width="210">
+            <template #default="{ row }">
+              <div style="font-size:12px">{{ row.entryTime?.slice(5) || '-' }} → {{ row.exitTime?.slice(5) || '-' }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="时长" width="70">
+            <template #default="{ row }">{{ row.totalDuration }}分</template>
+          </el-table-column>
+          <el-table-column label="应收" width="80">
+            <template #default="{ row }">¥{{ row.grossAmount.toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column label="免费抵扣" width="90">
+            <template #default="{ row }">-¥{{ row.freeDeduction.toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column label="额度抵扣" width="90">
+            <template #default="{ row }">-¥{{ row.quotaDeduction.toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column label="实收" width="80">
+            <template #default="{ row }">¥{{ row.selfPayAmount.toFixed(2) }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <el-empty v-else description="暂无数据" />
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { detailStorage } from '@/store/storage'
-import type { ConsumptionDetail } from '@/types'
+import { ref, computed, reactive, onMounted } from 'vue'
+import { detailStorage, recordStorage, quotaTransactionStorage } from '@/store/storage'
+import type { ConsumptionDetail, ParkingRecord, QuotaTransaction } from '@/types'
 import dayjs from 'dayjs'
 import ParkingReceipt from '@/components/ParkingReceipt.vue'
 
@@ -191,7 +233,18 @@ const dateRange = ref<string[]>([
 ])
 
 const receiptVisible = ref(false)
+const batchReceiptVisible = ref(false)
 const currentDetail = ref<ConsumptionDetail | null>(null)
+const selectedDetails = ref<ConsumptionDetail[]>([])
+const detailTableRef = ref()
+
+const exportData = reactive({
+  rows: [] as any[],
+  grossTotal: 0,
+  freeTotal: 0,
+  quotaTotal: 0,
+  payTotal: 0
+})
 
 const filteredDetails = computed(() => {
   let list = details.value
@@ -239,6 +292,10 @@ function formatDuration(minutes: number): string {
   return `${h}时${m}分`
 }
 
+function handleSelectionChange(rows: ConsumptionDetail[]) {
+  selectedDetails.value = rows
+}
+
 function loadData() {
   details.value = detailStorage.getAll().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
@@ -257,6 +314,52 @@ function resetFilter() {
 function openReceipt(row: ConsumptionDetail) {
   currentDetail.value = row
   receiptVisible.value = true
+}
+
+function batchPrintReceipt() {
+  if (selectedDetails.value.length === 0) return
+  currentDetail.value = selectedDetails.value[0]
+  receiptVisible.value = true
+}
+
+function exportReconciliation() {
+  const sourceRows = selectedDetails.value.length > 0 ? selectedDetails.value : filteredDetails.value
+  if (sourceRows.length === 0) return
+
+  const rows: any[] = []
+  let grossTotal = 0, freeTotal = 0, quotaTotal = 0, payTotal = 0
+
+  for (const detail of sourceRows) {
+    const record = recordStorage.getAll().find(r => r.id === detail.recordId)
+    const quotaTx = detail.id ? quotaTransactionStorage.getByDetailId(detail.id) : undefined
+
+    rows.push({
+      plateNumber: detail.plateNumber,
+      entryTime: detail.entryTime,
+      exitTime: detail.exitTime,
+      totalDuration: detail.totalDuration,
+      grossAmount: detail.grossAmount,
+      freeDeduction: detail.freeDeduction,
+      freeDeductedMinutes: detail.freeDeductedMinutes,
+      quotaDeduction: detail.quotaDeduction,
+      quotaDeductedMinutes: detail.quotaDeductedMinutes,
+      selfPayAmount: detail.selfPayAmount,
+      recordGross: record?.totalAmount,
+      quotaChangeMinutes: quotaTx ? Math.abs(quotaTx.changeMinutes) : null,
+      quotaBalanceAfter: quotaTx ? quotaTx.balanceAfter : null
+    })
+    grossTotal += detail.grossAmount
+    freeTotal += detail.freeDeduction
+    quotaTotal += detail.quotaDeduction
+    payTotal += detail.selfPayAmount
+  }
+
+  exportData.rows = rows
+  exportData.grossTotal = grossTotal
+  exportData.freeTotal = freeTotal
+  exportData.quotaTotal = quotaTotal
+  exportData.payTotal = payTotal
+  batchReceiptVisible.value = true
 }
 
 onMounted(loadData)
