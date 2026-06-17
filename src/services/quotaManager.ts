@@ -78,7 +78,8 @@ export function issueMonthlyQuota(
 export function applyQuotaToBilling(
   card: MonthlyCard,
   segments: BillingSegment[],
-  currentDate: string
+  currentDate: string,
+  dryRun: boolean = false
 ): QuotaApplication {
   const activeCard = resetMonthlyQuotaIfNeeded(card, currentDate)
 
@@ -87,31 +88,44 @@ export function applyQuotaToBilling(
   let quotaAppliedMinutes = 0
   let quotaDeductedAmount = 0
 
+  const totalParkingMinutes = segments.reduce((s, seg) => s + seg.durationMinutes, 0)
+
   const finalSegments: BillingSegment[] = segments.map(s => ({ ...s }))
 
-  for (const seg of finalSegments) {
-    if (availableQuota <= 0) break
-    if (seg.durationMinutes <= 0) continue
+  if (availableQuota >= totalParkingMinutes && totalParkingMinutes > 0) {
+    quotaAppliedMinutes = totalParkingMinutes
+    quotaDeductedAmount = Number(segments.reduce((s, seg) => s + seg.amount, 0).toFixed(2))
+    availableQuota -= totalParkingMinutes
+    usedQuota = totalParkingMinutes
+    finalSegments.forEach(seg => {
+      seg.durationMinutes = 0
+      seg.amount = 0
+    })
+  } else {
+    for (const seg of finalSegments) {
+      if (availableQuota <= 0) break
+      if (seg.durationMinutes <= 0) continue
 
-    const applyMin = Math.min(availableQuota, seg.durationMinutes)
-    const rate = seg.ratePerHour / 60
-    const deductAmount = Number((applyMin * rate).toFixed(2))
+      const applyMin = Math.min(availableQuota, seg.durationMinutes)
+      const rate = seg.ratePerHour / 60
+      const deductAmount = Number((applyMin * rate).toFixed(2))
 
-    seg.durationMinutes -= applyMin
-    seg.amount = Number((seg.amount - deductAmount).toFixed(2))
-    if (seg.amount < 0) seg.amount = 0
+      seg.durationMinutes -= applyMin
+      seg.amount = Number((seg.amount - deductAmount).toFixed(2))
+      if (seg.amount < 0) seg.amount = 0
 
-    availableQuota -= applyMin
-    usedQuota += applyMin
-    quotaAppliedMinutes += applyMin
-    quotaDeductedAmount = Number((quotaDeductedAmount + deductAmount).toFixed(2))
+      availableQuota -= applyMin
+      usedQuota += applyMin
+      quotaAppliedMinutes += applyMin
+      quotaDeductedAmount = Number((quotaDeductedAmount + deductAmount).toFixed(2))
+    }
   }
 
   const filteredSegments = finalSegments.filter(s => s.durationMinutes > 0 || s.amount > 0)
   const excessMinutes = filteredSegments.reduce((s, seg) => s + seg.durationMinutes, 0)
   const excessAmount = Number(filteredSegments.reduce((s, seg) => s + seg.amount, 0).toFixed(2))
 
-  if (quotaAppliedMinutes > 0) {
+  if (quotaAppliedMinutes > 0 && !dryRun) {
     cardStorage.update(activeCard.id, {
       remainingQuota: availableQuota,
       usedQuotaThisMonth: activeCard.usedQuotaThisMonth + usedQuota

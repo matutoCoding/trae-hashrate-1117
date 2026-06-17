@@ -24,9 +24,13 @@ function buildDayBoundaries(rates: TimeRate[]): RateBoundary[] {
   const boundaries: RateBoundary[] = []
   for (const rate of rates) {
     const startMin = parseTimeToMinutes(rate.startTime)
-    let endMin = parseTimeToMinutes(rate.endTime)
-    if (endMin <= startMin) endMin += 24 * 60
-    boundaries.push({ rate, startMin, endMin })
+    const rawEndMin = parseTimeToMinutes(rate.endTime)
+    if (rawEndMin <= startMin) {
+      boundaries.push({ rate, startMin: 0, endMin: rawEndMin })
+      boundaries.push({ rate, startMin, endMin: 24 * 60 })
+    } else {
+      boundaries.push({ rate, startMin, endMin: rawEndMin })
+    }
   }
   boundaries.sort((a, b) => a.startMin - b.startMin)
   return boundaries
@@ -36,10 +40,10 @@ function fillGapWithPreviousRate(boundaries: RateBoundary[]): RateBoundary[] {
   if (boundaries.length === 0) return boundaries
   const filled: RateBoundary[] = []
   let lastEnd = 0
-  let lastBoundary: RateBoundary | null = null
+  let lastBoundary: RateBoundary | null = boundaries[boundaries.length - 1]
 
   for (const b of boundaries) {
-    if (b.startMin > lastEnd && lastBoundary) {
+    if (b.startMin > lastEnd) {
       filled.push({
         ...lastBoundary,
         startMin: lastEnd,
@@ -47,13 +51,11 @@ function fillGapWithPreviousRate(boundaries: RateBoundary[]): RateBoundary[] {
       })
     }
     filled.push(b)
-    if (b.endMin > lastEnd) {
-      lastEnd = b.endMin
-      lastBoundary = b
-    }
+    lastEnd = b.endMin
+    lastBoundary = b
   }
 
-  if (lastEnd < 24 * 60 && lastBoundary) {
+  if (lastEnd < 24 * 60) {
     filled.push({
       ...lastBoundary,
       startMin: lastEnd,
@@ -89,14 +91,10 @@ export function splitIntoSegments(
       || boundaries[boundaries.length - 1]
 
     let segmentEndMin: number
-    if (boundary.endMin > 24 * 60) {
-      segmentEndMin = boundary.endMin - Math.floor(boundary.startMin / (24 * 60)) * 24 * 60
-    } else {
-      segmentEndMin = boundary.endMin
-    }
+    segmentEndMin = boundary.endMin
     if (segmentEndMin <= normalizedMin) segmentEndMin = normalizedMin + 1
 
-    const dayBoundaryMinutes = Math.min(segmentEndMin, 24 * 60)
+    const dayBoundaryMinutes = segmentEndMin
     const segmentEndTime = dayStart.clone().add(dayBoundaryMinutes, 'minute')
 
     const actualEnd = segmentEndTime.isAfter(exit) ? exit : segmentEndTime

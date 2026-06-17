@@ -103,26 +103,65 @@
           </el-form>
 
           <div v-if="exitResult" class="charge-info">
-            <template v-if="!exitResult.needPayment && exitResult.result">
-              <el-result icon="success" :title="exitResult.message">
+            <template v-if="exitResult.result && exitResult.result.canFreePass">
+              <el-result icon="success" title="计算完成，可免费放行">
                 <template #extra>
                   <div class="info-row">
                     <span class="info-label">入场时间</span>
                     <span class="info-value">{{ exitResult.result.record.entryTime }}</span>
                   </div>
                   <div class="info-row">
-                    <span class="info-label">出场时间</span>
-                    <span class="info-value">{{ exitResult.result.record.exitTime }}</span>
-                  </div>
-                  <div class="info-row">
                     <span class="info-label">停放时长</span>
                     <span class="info-value">{{ formatDuration(exitResult.result.totalDuration) }}</span>
                   </div>
+                  <div class="info-row">
+                    <span class="info-label">车辆类型</span>
+                    <span class="info-value">
+                      <span class="monthly-tag" v-if="exitResult.result.isMonthlyCard">月卡车</span>
+                      <span class="temp-tag" v-else>临时车</span>
+                    </span>
+                  </div>
+
+                  <div class="billing-detail-box">
+                    <div style="font-weight: 600; margin-bottom: 8px; color: #303133">
+                      分段计费明细
+                    </div>
+                    <div v-for="(seg, idx) in exitResult.result.segments" :key="idx" class="segment-row">
+                      <span class="segment-label">
+                        {{ seg.rateName }} · {{ seg.startTime.slice(11, 16) }}-{{ seg.endTime.slice(11, 16) }}
+                        ({{ seg.durationMinutes }}分钟 · ¥{{ seg.ratePerHour }}/时)
+                      </span>
+                      <span class="segment-value">¥{{ seg.amount.toFixed(2) }}</span>
+                    </div>
+                    <div class="segment-row" v-if="exitResult.result.freeDeductedMinutes > 0">
+                      <span class="segment-label negative">
+                        免费时长抵扣 ({{ exitResult.result.freeDeductedMinutes }}分钟)
+                      </span>
+                      <span class="segment-value negative">-¥{{ exitResult.result.freeDeductedAmount.toFixed(2) }}</span>
+                    </div>
+                    <div class="segment-row" v-if="exitResult.result.quotaDeductedMinutes > 0">
+                      <span class="segment-label negative">
+                        月卡额度抵扣 ({{ exitResult.result.quotaDeductedMinutes }}分钟)
+                      </span>
+                      <span class="segment-value negative">-¥{{ exitResult.result.quotaDeductedAmount.toFixed(2) }}</span>
+                    </div>
+                    <div class="total-row">
+                      <span>应付金额</span>
+                      <span class="positive">¥{{ exitResult.result.selfPayAmount.toFixed(2) }}</span>
+                    </div>
+                  </div>
+
                   <div v-if="exitResult.result.remainingQuota !== undefined" class="info-row">
-                    <span class="info-label">剩余额度</span>
+                    <span class="info-label">预计剩余额度</span>
                     <span class="info-value negative">
                       {{ formatDuration(exitResult.result.remainingQuota) }}
                     </span>
+                  </div>
+
+                  <div class="action-bar" style="justify-content: center; margin-top: 16px">
+                    <el-button type="success" size="large" :icon="'CircleCheck'" @click="handleConfirmFreePass">
+                      确认免费放行
+                    </el-button>
                   </div>
                 </template>
               </el-result>
@@ -251,6 +290,7 @@ import {
   vehicleEntry,
   vehicleExit,
   confirmPayment,
+  confirmFreePass,
   type EntryResult,
   type ExitBillingResult
 } from '@/services/parkingService'
@@ -342,10 +382,24 @@ function handleExit() {
 
   if (!exitResult.value.success) {
     ElMessage.warning(exitResult.value.message)
-  } else if (!exitResult.value.needPayment) {
-    ElMessage.success(exitResult.value.message)
+  } else if (exitResult.value.needPayment) {
+    ElMessage.info(`应缴费用 ¥${exitResult.value.result?.selfPayAmount.toFixed(2)}，请选择支付方式`)
+  } else {
+    ElMessage.info('计算完成，请确认后免费放行')
+  }
+}
+
+function handleConfirmFreePass() {
+  const plate = exitForm.plateNumber
+  const result = confirmFreePass(plate)
+
+  if (result.success) {
+    ElMessage.success(result.message)
+    exitResult.value = null
     exitForm.plateNumber = ''
     refreshActiveRecords()
+  } else {
+    ElMessage.warning(result.message)
   }
 }
 

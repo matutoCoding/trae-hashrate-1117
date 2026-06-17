@@ -4,7 +4,8 @@ import type {
   ConsumptionDetail,
   BillingSegment,
   DashboardStats,
-  SystemConfig
+  SystemConfig,
+  MonthlyCard
 } from '@/types'
 import {
   rateStorage,
@@ -17,7 +18,8 @@ import { calculateBilling, applyFreeDeduction } from './billingEngine'
 import {
   checkMonthlyCardValid,
   applyQuotaToBilling,
-  resetAllQuotasForNewMonth
+  resetAllQuotasForNewMonth,
+  resetMonthlyQuotaIfNeeded
 } from './quotaManager'
 
 export interface ExitBillingResult {
@@ -46,6 +48,114 @@ export interface EntryResult {
     remainingQuota: number
     monthlyQuota: number
   }
+}
+
+interface BillingPipeline {
+  billing: ReturnType<typeof calculateBilling>
+  segmentsAfterFree: BillingSegment[]
+  freeDeductedMinutes: number
+  freeDeductedAmount: number
+  finalSegments: BillingSegment[]
+  quotaDeductedMinutes: number
+  quotaDeductedAmount: number
+  remainingQuota?: number
+  activeCard?: MonthlyCard
+  selfPayAmount: number
+}
+
+function runBillingPipeline(
+  record: ParkingRecord,
+  exitTime: string,
+  dryRun: boolean
+): BillingPipeline {
+  const rates = rateStorage.getAll()
+  const billing = calculateBilling(record.entryTime, exitTime, rates)
+
+  const {
+    segments: segmentsAfterFree,
+    deductedMinutes: freeDeductedMinutes,
+    deductedAmount: freeDeductedAmount
+  } = applyFreeDeduction(billing, billing.freeMinutesEligible)
+
+  let finalSegments = segmentsAfterFree
+  let quotaDeductedMinutes = 0
+  let quotaDeductedAmount = 0
+  let remainingQuota: number | undefined
+  let activeCard: MonthlyCard | undefined
+
+  if (record.vehicleType === 'monthly' && record.monthlyCardId) {
+    const card = cardStorage.getAll().find(c => c.id === record.monthlyCardId)
+    if (card) {
+      activeCard = resetMonthlyQuotaIfNeeded(card, exitTime)
+      const quotaResult = applyQuotaToBilling(activeCard, finalSegments, exitTime, dryRun)
+      finalSegments = quotaResult.finalSegments
+      quotaDeductedMinutes = quotaResult.quotaAppliedMinutes
+      quotaDeductedAmount = quotaResult.quotaDeductedAmount
+      remainingQuota = quotaResult.availableQuota
+    }
+  }
+
+  const selfPayAmount = Number(
+    finalSegments.reduce((sum, s) => sum + s.amount, 0).toFixed(2)
+  )
+
+  return {
+    billing,
+    segmentsAfterFree,
+    freeDeductedMinutes,
+    freeDeductedAmount,
+    finalSegments,
+    quotaDeductedMinutes,
+    quotaDeductedAmount,
+    remainingQuota,
+    activeCard,
+    selfPayAmount
+  }
+}
+
+function finalizeExit(
+  record: ParkingRecord,
+  exitTime: string,
+  pipeline: BillingPipeline,
+  status: 'completed' | 'free',
+  paymentMethod?: 'cash' | 'wechat' | 'alipay' | 'card'
+): ConsumptionDetail {
+  const detailData: Omit<ConsumptionDetail, 'id'> = {
+    recordId: record.id,
+    plateNumber: record.plateNumber,
+    cardNo: pipeline.activeCard?.cardNo,
+    ownerName: pipeline.activeCard?.ownerName,
+    entryTime: record.entryTime,
+    exitTime,
+    totalDuration: pipeline.billing.totalDuration,
+    billedSegments: pipeline.finalSegments,
+    grossAmount: pipeline.billing.grossAmount,
+    freeDeduction: pipeline.freeDeductedAmount,
+    quotaDeduction: pipeline.quotaDeductedAmount,
+    selfPayAmount: pipeline.selfPayAmount,
+    paymentMethod,
+    paidAt: exitTime,
+    createdAt: exitTime
+  }
+  const detail = detailStorage.add(detailData)
+
+  recordStorage.update(record.id, {
+    exitTime,
+    durationMinutes: pipeline.billing.totalDuration,
+    billedSegments: pipeline.finalSegments,
+    totalAmount: pipeline.billing.grossAmount,
+    freeMinutesUsed: pipeline.freeDeductedMinutes,
+    quotaUsed: pipeline.quotaDeductedMinutes,
+    selfPaidAmount: pipeline.selfPayAmount,
+    status,
+    paymentMethod,
+    paidAt: exitTime
+  })
+
+  const config = configStorage.get()
+  configStorage.save({ ...config, availableSpaces: config.availableSpaces + 1 })
+
+  return detail
 }
 
 export function vehicleEntry(plateNumber: string): EntryResult {
@@ -99,8 +209,7 @@ export function vehicleEntry(plateNumber: string): EntryResult {
 }
 
 export function vehicleExit(
-  plateNumber: string,
-  paymentMethod?: 'cash' | 'wechat' | 'alipay' | 'card'
+  plateNumber: string
 ): { success: boolean; message: string; result?: ExitBillingResult; needPayment: boolean } {
   plateNumber = plateNumber.toUpperCase().trim()
 
@@ -111,115 +220,73 @@ export function vehicleExit(
 
   const now = dayjs()
   const exitTime = now.format('YYYY-MM-DD HH:mm:ss')
-  const rates = rateStorage.getAll()
 
-  const billing = calculateBilling(record.entryTime, exitTime, rates)
-
-  const {
-    segments: segmentsAfterFree,
-    deductedMinutes: freeDeductedMinutes,
-    deductedAmount: freeDeductedAmount
-  } = applyFreeDeduction(billing, billing.freeMinutesEligible)
-
-  let finalSegments = segmentsAfterFree
-  let quotaDeductedMinutes = 0
-  let quotaDeductedAmount = 0
-  let remainingQuota: number | undefined
-
-  if (record.vehicleType === 'monthly' && record.monthlyCardId) {
-    const cards = cardStorage.getAll()
-    const card = cards.find(c => c.id === record.monthlyCardId)
-    if (card) {
-      const quotaResult = applyQuotaToBilling(card, finalSegments, exitTime)
-      finalSegments = quotaResult.finalSegments
-      quotaDeductedMinutes = quotaResult.quotaAppliedMinutes
-      quotaDeductedAmount = quotaResult.quotaDeductedAmount
-      remainingQuota = quotaResult.availableQuota
-    }
-  }
-
-  const selfPayAmount = Number(
-    finalSegments.reduce((sum, s) => sum + s.amount, 0).toFixed(2)
-  )
-
-  const canFreePass = selfPayAmount <= 0
-
-  if (canFreePass) {
-    const detail: Omit<ConsumptionDetail, 'id'> = {
-      recordId: record.id,
-      plateNumber,
-      cardNo: record.monthlyCardId
-        ? cardStorage.getAll().find(c => c.id === record.monthlyCardId)?.cardNo
-        : undefined,
-      ownerName: record.monthlyCardId
-        ? cardStorage.getAll().find(c => c.id === record.monthlyCardId)?.ownerName
-        : undefined,
-      entryTime: record.entryTime,
-      exitTime,
-      totalDuration: billing.totalDuration,
-      billedSegments: finalSegments,
-      grossAmount: billing.grossAmount,
-      freeDeduction: freeDeductedAmount,
-      quotaDeduction: quotaDeductedAmount,
-      selfPayAmount: 0,
-      paidAt: exitTime,
-      createdAt: exitTime
-    }
-    detailStorage.add(detail)
-
-    recordStorage.update(record.id, {
-      exitTime,
-      durationMinutes: billing.totalDuration,
-      billedSegments: finalSegments,
-      totalAmount: billing.grossAmount,
-      freeMinutesUsed: freeDeductedMinutes,
-      quotaUsed: quotaDeductedMinutes,
-      selfPaidAmount: 0,
-      status: 'free',
-      paidAt: exitTime
-    })
-
-    const config = configStorage.get()
-    configStorage.save({ ...config, availableSpaces: config.availableSpaces + 1 })
-
-    return {
-      success: true,
-      message: remainingQuota !== undefined ? `放行成功，剩余额度${Math.floor(remainingQuota / 60)}小时${remainingQuota % 60}分钟` : '放行成功，无需缴费',
-      needPayment: false,
-      result: {
-        record: { ...record, exitTime, durationMinutes: billing.totalDuration, billedSegments: finalSegments, totalAmount: billing.grossAmount },
-        totalDuration: billing.totalDuration,
-        segments: finalSegments,
-        grossAmount: billing.grossAmount,
-        freeDeductedMinutes,
-        freeDeductedAmount,
-        quotaDeductedMinutes,
-        quotaDeductedAmount,
-        selfPayAmount: 0,
-        remainingQuota,
-        isMonthlyCard: record.vehicleType === 'monthly',
-        canFreePass: true
-      }
-    }
-  }
+  const pipeline = runBillingPipeline(record, exitTime, true)
+  const canFreePass = pipeline.selfPayAmount <= 0
 
   return {
     success: true,
-    message: `应缴费用: ¥${selfPayAmount.toFixed(2)}`,
-    needPayment: true,
+    message: canFreePass ? '免费放行，无需缴费' : `应缴费用: ¥${pipeline.selfPayAmount.toFixed(2)}`,
+    needPayment: !canFreePass,
     result: {
-      record,
-      totalDuration: billing.totalDuration,
-      segments: finalSegments,
-      grossAmount: billing.grossAmount,
-      freeDeductedMinutes,
-      freeDeductedAmount,
-      quotaDeductedMinutes,
-      quotaDeductedAmount,
-      selfPayAmount,
-      remainingQuota,
+      record: { ...record },
+      totalDuration: pipeline.billing.totalDuration,
+      segments: pipeline.finalSegments,
+      grossAmount: pipeline.billing.grossAmount,
+      freeDeductedMinutes: pipeline.freeDeductedMinutes,
+      freeDeductedAmount: pipeline.freeDeductedAmount,
+      quotaDeductedMinutes: pipeline.quotaDeductedMinutes,
+      quotaDeductedAmount: pipeline.quotaDeductedAmount,
+      selfPayAmount: pipeline.selfPayAmount,
+      remainingQuota: pipeline.remainingQuota,
       isMonthlyCard: record.vehicleType === 'monthly',
-      canFreePass: false
+      canFreePass
+    }
+  }
+}
+
+export function confirmFreePass(
+  plateNumber: string
+): { success: boolean; message: string; detail?: ConsumptionDetail; result?: ExitBillingResult } {
+  plateNumber = plateNumber.toUpperCase().trim()
+
+  const record = recordStorage.getActiveParking(plateNumber)
+  if (!record) {
+    return { success: false, message: '未找到在场记录' }
+  }
+
+  const now = dayjs()
+  const exitTime = now.format('YYYY-MM-DD HH:mm:ss')
+
+  const pipeline = runBillingPipeline(record, exitTime, false)
+  if (pipeline.selfPayAmount > 0.001) {
+    return {
+      success: false,
+      message: `存在自费金额 ¥${pipeline.selfPayAmount.toFixed(2)}，请先完成支付`
+    }
+  }
+
+  const detail = finalizeExit(record, exitTime, pipeline, 'free')
+
+  return {
+    success: true,
+    message: pipeline.remainingQuota !== undefined
+      ? `放行成功，剩余额度${Math.floor(pipeline.remainingQuota / 60)}小时${pipeline.remainingQuota % 60}分钟`
+      : '放行成功，无需缴费',
+    detail,
+    result: {
+      record: { ...record, exitTime, durationMinutes: pipeline.billing.totalDuration, billedSegments: pipeline.finalSegments, totalAmount: pipeline.billing.grossAmount },
+      totalDuration: pipeline.billing.totalDuration,
+      segments: pipeline.finalSegments,
+      grossAmount: pipeline.billing.grossAmount,
+      freeDeductedMinutes: pipeline.freeDeductedMinutes,
+      freeDeductedAmount: pipeline.freeDeductedAmount,
+      quotaDeductedMinutes: pipeline.quotaDeductedMinutes,
+      quotaDeductedAmount: pipeline.quotaDeductedAmount,
+      selfPayAmount: 0,
+      remainingQuota: pipeline.remainingQuota,
+      isMonthlyCard: record.vehicleType === 'monthly',
+      canFreePass: true
     }
   }
 }
@@ -237,72 +304,13 @@ export function confirmPayment(
 
   const now = dayjs()
   const exitTime = now.format('YYYY-MM-DD HH:mm:ss')
-  const rates = rateStorage.getAll()
 
-  const billing = calculateBilling(record.entryTime, exitTime, rates)
-  const { segments: segmentsAfterFree, deductedMinutes: freeDeductedMinutes, deductedAmount: freeDeductedAmount } = applyFreeDeduction(billing, billing.freeMinutesEligible)
-
-  let finalSegments = segmentsAfterFree
-  let quotaDeductedAmount = 0
-  let quotaDeductedMinutes = 0
-
-  if (record.vehicleType === 'monthly' && record.monthlyCardId) {
-    const cards = cardStorage.getAll()
-    const card = cards.find(c => c.id === record.monthlyCardId)
-    if (card) {
-      const quotaResult = applyQuotaToBilling(card, finalSegments, exitTime)
-      finalSegments = quotaResult.finalSegments
-      quotaDeductedMinutes = quotaResult.quotaAppliedMinutes
-      quotaDeductedAmount = quotaResult.quotaDeductedAmount
-    }
-  }
-
-  const selfPayAmount = Number(
-    finalSegments.reduce((sum, s) => sum + s.amount, 0).toFixed(2)
-  )
-
-  const detailData: Omit<ConsumptionDetail, 'id'> = {
-    recordId: record.id,
-    plateNumber,
-    cardNo: record.monthlyCardId
-      ? cardStorage.getAll().find(c => c.id === record.monthlyCardId)?.cardNo
-      : undefined,
-    ownerName: record.monthlyCardId
-      ? cardStorage.getAll().find(c => c.id === record.monthlyCardId)?.ownerName
-      : undefined,
-    entryTime: record.entryTime,
-    exitTime,
-    totalDuration: billing.totalDuration,
-    billedSegments: finalSegments,
-    grossAmount: billing.grossAmount,
-    freeDeduction: freeDeductedAmount,
-    quotaDeduction: quotaDeductedAmount,
-    selfPayAmount,
-    paymentMethod,
-    paidAt: exitTime,
-    createdAt: exitTime
-  }
-  const detail = detailStorage.add(detailData)
-
-  recordStorage.update(record.id, {
-    exitTime,
-    durationMinutes: billing.totalDuration,
-    billedSegments: finalSegments,
-    totalAmount: billing.grossAmount,
-    freeMinutesUsed: freeDeductedMinutes,
-    quotaUsed: quotaDeductedMinutes,
-    selfPaidAmount: selfPayAmount,
-    status: 'completed',
-    paymentMethod,
-    paidAt: exitTime
-  })
-
-  const config = configStorage.get()
-  configStorage.save({ ...config, availableSpaces: config.availableSpaces + 1 })
+  const pipeline = runBillingPipeline(record, exitTime, false)
+  const detail = finalizeExit(record, exitTime, pipeline, 'completed', paymentMethod)
 
   return {
     success: true,
-    message: `支付成功，已缴费¥${selfPayAmount.toFixed(2)}`,
+    message: `支付成功，已缴费¥${pipeline.selfPayAmount.toFixed(2)}`,
     detail
   }
 }
