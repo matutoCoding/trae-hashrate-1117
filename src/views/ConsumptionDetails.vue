@@ -29,7 +29,14 @@
           placeholder="输入车牌号查询"
           clearable
           :prefix-icon="'Search'"
-          style="width: 200px"
+          style="width: 180px"
+        />
+        <el-input
+          v-model="searchCardNo"
+          placeholder="输入月卡编号"
+          clearable
+          :prefix-icon="'CreditCard'"
+          style="width: 180px"
         />
         <el-select v-model="filterType" placeholder="车辆类型" style="width: 140px" clearable>
           <el-option label="月卡车" value="monthly" />
@@ -58,14 +65,14 @@
           <div class="stat-card purple card-shadow">
             <div class="stat-label">免费抵扣</div>
             <div class="stat-value">¥{{ totalFreeDeduct.toFixed(2) }}</div>
-            <div class="stat-sub">元</div>
+            <div class="stat-sub">元 ({{ totalFreeMinutes }}分钟)</div>
           </div>
         </el-col>
         <el-col :span="6">
           <div class="stat-card orange card-shadow">
             <div class="stat-label">额度抵扣</div>
             <div class="stat-value">¥{{ totalQuotaDeduct.toFixed(2) }}</div>
-            <div class="stat-sub">元</div>
+            <div class="stat-sub">元 ({{ totalQuotaMinutes }}分钟)</div>
           </div>
         </el-col>
       </el-row>
@@ -83,21 +90,22 @@
           </template>
         </el-table-column>
         <el-table-column prop="ownerName" label="车主" width="90" />
-        <el-table-column prop="entryTime" label="入场时间" width="160" />
-        <el-table-column prop="exitTime" label="出场时间" width="160" />
-        <el-table-column label="停放时长" width="110">
+        <el-table-column prop="entryTime" label="入场时间" width="150" />
+        <el-table-column prop="exitTime" label="出场时间" width="150" />
+        <el-table-column label="停放时长" width="100">
           <template #default="{ row }">{{ formatDuration(row.totalDuration) }}</template>
         </el-table-column>
-        <el-table-column label="分段明细" min-width="200">
+        <el-table-column label="原始分段" min-width="160">
           <template #default="{ row }">
-            <el-popover placement="left" :width="360" trigger="hover">
+            <el-popover placement="left" :width="380" trigger="hover">
               <template #reference>
                 <el-tag type="info" effect="plain" style="cursor: pointer">
-                  {{ row.billedSegments.length }}段明细
+                  {{ (row.originalSegments || row.billedSegments).length }}段明细
                 </el-tag>
               </template>
               <div style="font-size: 13px">
-                <div v-for="(seg, idx) in row.billedSegments" :key="idx" class="segment-row">
+                <div style="font-weight: 600; color: #409eff; margin-bottom: 6px">① 原始分段（未抵扣）</div>
+                <div v-for="(seg, idx) in (row.originalSegments || row.billedSegments)" :key="idx" class="segment-row">
                   <span>
                     <strong>{{ seg.rateName }}</strong>
                     {{ seg.startTime.slice(11, 16) }}-{{ seg.endTime.slice(11, 16) }}
@@ -111,11 +119,11 @@
                   <span>¥{{ row.grossAmount.toFixed(2) }}</span>
                 </div>
                 <div class="segment-row" v-if="row.freeDeduction > 0">
-                  <span class="negative">免费抵扣</span>
+                  <span class="negative">免费抵扣 ({{row.freeDeductedMinutes || 0}}分)</span>
                   <span class="negative">-¥{{ row.freeDeduction.toFixed(2) }}</span>
                 </div>
                 <div class="segment-row" v-if="row.quotaDeduction > 0">
-                  <span class="negative">额度抵扣</span>
+                  <span class="negative">额度抵扣 ({{row.quotaDeductedMinutes || 0}}分)</span>
                   <span class="negative">-¥{{ row.quotaDeduction.toFixed(2) }}</span>
                 </div>
                 <div class="total-row">
@@ -140,7 +148,7 @@
             <span style="color: #909399">¥{{ row.grossAmount.toFixed(2) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="优惠" width="90">
+        <el-table-column label="优惠" width="100">
           <template #default="{ row }">
             <span class="negative">-¥{{ (row.freeDeduction + row.quotaDeduction).toFixed(2) }}</span>
           </template>
@@ -150,10 +158,19 @@
             <span style="color: #f56c6c; font-weight: 600">¥{{ row.selfPayAmount.toFixed(2) }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button type="primary" size="small" link @click="openReceipt(row)">小票</el-button>
+          </template>
+        </el-table-column>
       </el-table>
 
       <el-empty v-if="filteredDetails.length === 0" description="暂无消费明细数据" style="padding: 40px 0" />
     </el-card>
+
+    <el-dialog v-model="receiptVisible" title="收费小票" width="600px" destroy-on-close>
+      <ParkingReceipt v-if="currentDetail" :data="currentDetail" />
+    </el-dialog>
   </div>
 </template>
 
@@ -162,14 +179,19 @@ import { ref, computed, onMounted } from 'vue'
 import { detailStorage } from '@/store/storage'
 import type { ConsumptionDetail } from '@/types'
 import dayjs from 'dayjs'
+import ParkingReceipt from '@/components/ParkingReceipt.vue'
 
 const details = ref<ConsumptionDetail[]>([])
 const searchPlate = ref('')
+const searchCardNo = ref('')
 const filterType = ref('')
 const dateRange = ref<string[]>([
   dayjs().startOf('month').format('YYYY-MM-DD 00:00:00'),
   dayjs().endOf('day').format('YYYY-MM-DD HH:mm:ss')
 ])
+
+const receiptVisible = ref(false)
+const currentDetail = ref<ConsumptionDetail | null>(null)
 
 const filteredDetails = computed(() => {
   let list = details.value
@@ -179,6 +201,10 @@ const filteredDetails = computed(() => {
   if (searchPlate.value) {
     const kw = searchPlate.value.toLowerCase()
     list = list.filter(d => d.plateNumber.toLowerCase().includes(kw))
+  }
+  if (searchCardNo.value) {
+    const kw = searchCardNo.value.toLowerCase()
+    list = list.filter(d => d.cardNo && d.cardNo.toLowerCase().includes(kw))
   }
   if (filterType.value) {
     list = list.filter(d =>
@@ -197,6 +223,12 @@ const totalFreeDeduct = computed(() =>
 const totalQuotaDeduct = computed(() =>
   filteredDetails.value.reduce((s, d) => s + d.quotaDeduction, 0)
 )
+const totalFreeMinutes = computed(() =>
+  filteredDetails.value.reduce((s, d) => s + (d.freeDeductedMinutes || 0), 0)
+)
+const totalQuotaMinutes = computed(() =>
+  filteredDetails.value.reduce((s, d) => s + (d.quotaDeductedMinutes || 0), 0)
+)
 
 function formatDuration(minutes: number): string {
   if (minutes <= 0) return '0分'
@@ -213,12 +245,18 @@ function loadData() {
 
 function resetFilter() {
   searchPlate.value = ''
+  searchCardNo.value = ''
   filterType.value = ''
   dateRange.value = [
     dayjs().startOf('month').format('YYYY-MM-DD 00:00:00'),
     dayjs().endOf('day').format('YYYY-MM-DD HH:mm:ss')
   ]
   loadData()
+}
+
+function openReceipt(row: ConsumptionDetail) {
+  currentDetail.value = row
+  receiptVisible.value = true
 }
 
 onMounted(loadData)

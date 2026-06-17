@@ -91,8 +91,11 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="300" fixed="right">
           <template #default="{ row }">
+            <el-button type="warning" size="small" link @click="openHistoryDialog(row)">
+              用量流水
+            </el-button>
             <el-button type="success" size="small" link @click="openIssueDialog(row)">
               发放额度
             </el-button>
@@ -181,6 +184,89 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="historyVisible" title="额度用量流水" width="860px" destroy-on-close>
+      <div v-if="currentCard" style="padding: 4px 0 16px 0">
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="月卡编号">{{ currentCard.cardNo }}</el-descriptions-item>
+          <el-descriptions-item label="车主/车牌">
+            {{ currentCard.ownerName }} /
+            <span style="font-family: monospace; font-weight: 600">{{ currentCard.plateNumber }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="剩余额度">
+            <span style="color:#67c23a; font-weight: 600">{{ formatDuration(currentCard.remainingQuota) }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <el-row :gutter="12" style="margin-top: 16px">
+          <el-col :span="6">
+            <div class="stat-card blue card-shadow" style="padding: 12px">
+              <div class="stat-label">本月已用</div>
+              <div class="stat-value">{{ formatDuration(currentCard.usedQuotaThisMonth) }}</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="stat-card green card-shadow" style="padding: 12px">
+              <div class="stat-label">发放累计</div>
+              <div class="stat-value">{{ formatDuration(historyStats.issued) }}</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="stat-card orange card-shadow" style="padding: 12px">
+              <div class="stat-label">扣减累计</div>
+              <div class="stat-value">{{ formatDuration(historyStats.used) }}</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="stat-card purple card-shadow" style="padding: 12px">
+              <div class="stat-label">抵扣金额</div>
+              <div class="stat-value">¥{{ historyStats.amount.toFixed(2) }}</div>
+            </div>
+          </el-col>
+        </el-row>
+
+        <el-table :data="historyList" stripe max-height="360" style="margin-top: 16px">
+          <el-table-column prop="createdAt" label="时间" width="160" />
+          <el-table-column label="类型" width="100">
+            <template #default="{ row }">
+              <el-tag v-if="row.type === 'use'" type="danger" effect="light" size="small">扣减</el-tag>
+              <el-tag v-else-if="row.type === 'issue'" type="success" effect="light" size="small">发放</el-tag>
+              <el-tag v-else type="info" effect="light" size="small">重置</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="变动时长" width="120">
+            <template #default="{ row }">
+              <span :class="row.type === 'use' ? 'positive' : 'negative'">
+                {{ row.type === 'use' ? '-' : '+' }}{{ formatDuration(Math.abs(row.changeMinutes)) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="抵扣金额" width="110">
+            <template #default="{ row }">
+              <span v-if="row.deductedAmount && row.deductedAmount > 0" style="color:#f56c6c">
+                -¥{{ row.deductedAmount.toFixed(2) }}
+              </span>
+              <span v-else style="color:#c0c4cc">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="余额变动" width="150">
+            <template #default="{ row }">
+              <span style="color:#909399">{{ formatDuration(row.balanceBefore) }}</span>
+              <el-icon style="vertical-align: -2px; margin: 0 4px; color:#c0c4cc"><ArrowRight /></el-icon>
+              <span style="color:#409eff; font-weight: 600">{{ formatDuration(row.balanceAfter) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="remark" label="备注" min-width="160">
+            <template #default="{ row }">
+              <span v-if="row.remark">{{ row.remark }}</span>
+              <span v-else-if="row.type === 'use' && row.detailId" style="color:#c0c4cc">账单已关联</span>
+              <span v-else style="color:#c0c4cc">-</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="historyList.length === 0" description="暂无额度流水" style="padding: 32px 0" />
+      </div>
+    </el-dialog>
+
     <el-dialog v-model="issueVisible" title="发放额外免费额度" width="420px" destroy-on-close>
       <div v-if="currentCard" style="padding: 8px 0">
         <div class="info-row">
@@ -221,8 +307,8 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import type { MonthlyCard } from '@/types'
-import { cardStorage } from '@/store/storage'
+import type { MonthlyCard, QuotaTransaction } from '@/types'
+import { cardStorage, quotaTransactionStorage } from '@/store/storage'
 import { issueMonthlyQuota, resetAllQuotasForNewMonth } from '@/services/quotaManager'
 
 const cards = ref<MonthlyCard[]>([])
@@ -236,8 +322,11 @@ const formRef = ref<FormInstance>()
 const quotaHours = ref(60)
 
 const issueVisible = ref(false)
+const historyVisible = ref(false)
 const currentCard = ref<MonthlyCard | null>(null)
 const issueMinutes = ref(600)
+const historyList = ref<QuotaTransaction[]>([])
+const historyStats = reactive({ issued: 0, used: 0, amount: 0 })
 
 const form = reactive({
   cardNo: '',
@@ -373,6 +462,15 @@ function openIssueDialog(row: MonthlyCard) {
   currentCard.value = { ...row }
   issueMinutes.value = 600
   issueVisible.value = true
+}
+
+function openHistoryDialog(row: MonthlyCard) {
+  currentCard.value = { ...row }
+  historyList.value = quotaTransactionStorage.getByCardId(row.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  historyStats.issued = historyList.value.filter(t => t.type === 'issue').reduce((s, t) => s + Math.abs(t.changeMinutes), 0)
+  historyStats.used = historyList.value.filter(t => t.type === 'use').reduce((s, t) => s + Math.abs(t.changeMinutes), 0)
+  historyStats.amount = historyList.value.reduce((s, t) => s + (t.deductedAmount || 0), 0)
+  historyVisible.value = true
 }
 
 function confirmIssue() {

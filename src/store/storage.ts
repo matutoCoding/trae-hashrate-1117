@@ -1,10 +1,18 @@
-import type { TimeRate, ParkingRecord, MonthlyCard, ConsumptionDetail, SystemConfig } from '@/types'
+import type {
+  TimeRate,
+  ParkingRecord,
+  MonthlyCard,
+  ConsumptionDetail,
+  SystemConfig,
+  QuotaTransaction
+} from '@/types'
 
 const STORAGE_KEYS = {
   TIME_RATES: 'sp_time_rates',
   PARKING_RECORDS: 'sp_parking_records',
   MONTHLY_CARDS: 'sp_monthly_cards',
   CONSUMPTION_DETAILS: 'sp_consumption_details',
+  QUOTA_TRANSACTIONS: 'sp_quota_transactions',
   SYSTEM_CONFIG: 'sp_system_config'
 }
 
@@ -95,6 +103,12 @@ export const recordStorage = {
       if (!r.exitTime) return false
       return r.exitTime >= start && r.exitTime <= end
     })
+  },
+  getByPlate(plateNumber: string): ParkingRecord[] {
+    return this.getAll().filter(r => r.plateNumber === plateNumber)
+  },
+  getByCardId(cardId: string): ParkingRecord[] {
+    return this.getAll().filter(r => r.monthlyCardId === cardId)
   }
 }
 
@@ -135,6 +149,9 @@ export const cardStorage = {
   },
   findByCardNo(cardNo: string): MonthlyCard | undefined {
     return this.getAll().find(c => c.cardNo === cardNo)
+  },
+  getById(id: string): MonthlyCard | undefined {
+    return this.getAll().find(c => c.id === id)
   }
 }
 
@@ -160,6 +177,53 @@ export const detailStorage = {
   },
   getByCardNo(cardNo: string): ConsumptionDetail[] {
     return this.getAll().filter(d => d.cardNo === cardNo)
+  },
+  getByRecordId(recordId: string): ConsumptionDetail | undefined {
+    return this.getAll().find(d => d.recordId === recordId)
+  },
+  getByCardId(cardId: string): ConsumptionDetail[] {
+    const cards = cardStorage.getAll()
+    const card = cards.find(c => c.id === cardId)
+    if (!card) return []
+    return this.getAll().filter(d => d.cardNo === card.cardNo)
+  }
+}
+
+export const quotaTransactionStorage = {
+  getAll(): QuotaTransaction[] {
+    return readData<QuotaTransaction[]>(STORAGE_KEYS.QUOTA_TRANSACTIONS, [])
+  },
+  saveAll(list: QuotaTransaction[]): void {
+    writeData(STORAGE_KEYS.QUOTA_TRANSACTIONS, list)
+  },
+  add(tx: Omit<QuotaTransaction, 'id'>): QuotaTransaction {
+    const list = this.getAll()
+    const newTx: QuotaTransaction = { ...tx, id: generateId() }
+    list.push(newTx)
+    this.saveAll(list)
+    return newTx
+  },
+  update(id: string, data: Partial<QuotaTransaction>): boolean {
+    const list = this.getAll()
+    const idx = list.findIndex(t => t.id === id)
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...data }
+      this.saveAll(list)
+      return true
+    }
+    return false
+  },
+  getByCardId(cardId: string): QuotaTransaction[] {
+    return this.getAll().filter(t => t.cardId === cardId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  },
+  getByCardNo(cardNo: string): QuotaTransaction[] {
+    return this.getAll().filter(t => t.cardNo === cardNo).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  },
+  getByPlate(plateNumber: string): QuotaTransaction[] {
+    return this.getAll().filter(t => t.plateNumber === plateNumber).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  },
+  getByDetailId(detailId: string): QuotaTransaction | undefined {
+    return this.getAll().find(t => t.detailId === detailId)
   }
 }
 

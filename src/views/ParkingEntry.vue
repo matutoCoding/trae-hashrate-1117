@@ -124,9 +124,9 @@
 
                   <div class="billing-detail-box">
                     <div style="font-weight: 600; margin-bottom: 8px; color: #303133">
-                      分段计费明细
+                      原始分段计费明细
                     </div>
-                    <div v-for="(seg, idx) in exitResult.result.segments" :key="idx" class="segment-row">
+                    <div v-for="(seg, idx) in exitResult.result.originalSegments" :key="idx" class="segment-row">
                       <span class="segment-label">
                         {{ seg.rateName }} · {{ seg.startTime.slice(11, 16) }}-{{ seg.endTime.slice(11, 16) }}
                         ({{ seg.durationMinutes }}分钟 · ¥{{ seg.ratePerHour }}/时)
@@ -186,9 +186,9 @@
 
               <div class="billing-detail-box">
                 <div style="font-weight: 600; margin-bottom: 8px; color: #303133">
-                  分段计费明细
+                  原始分段计费明细
                 </div>
-                <div v-for="(seg, idx) in exitResult.result.segments" :key="idx" class="segment-row">
+                <div v-for="(seg, idx) in exitResult.result.originalSegments" :key="idx" class="segment-row">
                   <span class="segment-label">
                     {{ seg.rateName }} · {{ seg.startTime.slice(11, 16) }}-{{ seg.endTime.slice(11, 16) }}
                     ({{ seg.durationMinutes }}分钟 · ¥{{ seg.ratePerHour }}/时)
@@ -247,11 +247,22 @@
               :prefix-icon="'Search'"
               style="width: 200px"
             />
+            <el-input
+              v-model="searchCardNo"
+              placeholder="搜索月卡编号"
+              clearable
+              :prefix-icon="'CreditCard'"
+              style="width: 200px; margin-left: 8px"
+            />
           </div>
         </div>
       </template>
       <el-table :data="filteredActiveRecords" stripe max-height="360">
-        <el-table-column prop="plateNumber" label="车牌号" width="140" />
+        <el-table-column prop="plateNumber" label="车牌号" width="140">
+          <template #default="{ row }">
+            <span style="font-family: monospace; font-weight: 600">{{ row.plateNumber }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="类型" width="100">
           <template #default="{ row }">
             <span class="monthly-tag" v-if="row.vehicleType === 'monthly'">月卡</span>
@@ -278,14 +289,18 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <el-dialog v-model="receiptVisible" title="支付成功 - 收费小票" width="620px" destroy-on-close>
+      <ParkingReceipt v-if="receiptData" :data="receiptData" />
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { ParkingRecord } from '@/types'
-import { rateStorage, recordStorage } from '@/store/storage'
+import type { ParkingRecord, ConsumptionDetail } from '@/types'
+import { rateStorage, recordStorage, cardStorage } from '@/store/storage'
 import {
   vehicleEntry,
   vehicleExit,
@@ -295,10 +310,12 @@ import {
   type ExitBillingResult
 } from '@/services/parkingService'
 import { calculateBilling } from '@/services/billingEngine'
+import ParkingReceipt from '@/components/ParkingReceipt.vue'
 
 const entryForm = reactive({ plateNumber: '' })
 const exitForm = reactive({ plateNumber: '' })
 const searchPlate = ref('')
+const searchCardNo = ref('')
 
 const entryResultMsg = ref('')
 const entrySuccess = ref(false)
@@ -310,17 +327,32 @@ const exitResult = ref<{
   needPayment: boolean
 } | null>(null)
 
+const receiptVisible = ref(false)
+const receiptData = ref<ConsumptionDetail | null>(null)
+
 const activeRecords = ref<ParkingRecord[]>([])
 
 function refreshActiveRecords() {
-  activeRecords.value = recordStorage.getAllActive()
+  activeRecords.value = recordStorage.getAllActive().map(r => {
+    if (r.monthlyCardId) {
+      const card = cardStorage.getById(r.monthlyCardId)
+      if (card) return { ...r, monthlyCardNo: card.cardNo }
+    }
+    return r
+  })
 }
 
 const filteredActiveRecords = computed(() => {
-  if (!searchPlate.value) return activeRecords.value
-  return activeRecords.value.filter(r =>
-    r.plateNumber.toLowerCase().includes(searchPlate.value.toLowerCase())
-  )
+  let list = activeRecords.value
+  if (searchPlate.value) {
+    const kw = searchPlate.value.toLowerCase()
+    list = list.filter(r => r.plateNumber.toLowerCase().includes(kw))
+  }
+  if (searchCardNo.value) {
+    const kw = searchCardNo.value.toLowerCase()
+    list = list.filter(r => (r as any).monthlyCardNo && (r as any).monthlyCardNo.toLowerCase().includes(kw))
+  }
+  return list
 })
 
 function formatDuration(minutes: number): string {
@@ -395,6 +427,10 @@ function handleConfirmFreePass() {
 
   if (result.success) {
     ElMessage.success(result.message)
+    if (result.detail) {
+      receiptData.value = result.detail
+      receiptVisible.value = true
+    }
     exitResult.value = null
     exitForm.plateNumber = ''
     refreshActiveRecords()
@@ -409,6 +445,10 @@ function handlePay(method: 'cash' | 'wechat' | 'alipay' | 'card') {
 
   if (result.success) {
     ElMessage.success(result.message)
+    if (result.detail) {
+      receiptData.value = result.detail
+      receiptVisible.value = true
+    }
     exitResult.value = null
     exitForm.plateNumber = ''
     refreshActiveRecords()

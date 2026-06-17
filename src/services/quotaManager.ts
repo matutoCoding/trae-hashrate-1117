@@ -1,6 +1,6 @@
 import dayjs from 'dayjs'
-import type { MonthlyCard, BillingSegment } from '@/types'
-import { cardStorage } from '@/store/storage'
+import type { MonthlyCard, BillingSegment, QuotaTransaction } from '@/types'
+import { cardStorage, quotaTransactionStorage } from '@/store/storage'
 
 export interface QuotaApplication {
   cardId: string
@@ -11,6 +11,11 @@ export interface QuotaApplication {
   excessMinutes: number
   excessAmount: number
   finalSegments: BillingSegment[]
+  transactionId?: string
+}
+
+function createQuotaTx(params: Omit<QuotaTransaction, 'id' | 'createdAt'>): QuotaTransaction {
+  return quotaTransactionStorage.add(params)
 }
 
 function isFirstOfMonth(dateStr: string, lastReset?: string): boolean {
@@ -23,6 +28,7 @@ function isFirstOfMonth(dateStr: string, lastReset?: string): boolean {
 
 export function resetMonthlyQuotaIfNeeded(card: MonthlyCard, currentDate: string): MonthlyCard {
   if (isFirstOfMonth(currentDate, card.lastResetDate)) {
+    const balanceBefore = card.remainingQuota
     const updated = {
       ...card,
       remainingQuota: card.monthlyQuotaMinutes,
@@ -30,6 +36,17 @@ export function resetMonthlyQuotaIfNeeded(card: MonthlyCard, currentDate: string
       lastResetDate: dayjs(currentDate).startOf('month').format('YYYY-MM-DD')
     }
     cardStorage.update(card.id, updated)
+    createQuotaTx({
+      cardId: card.id,
+      cardNo: card.cardNo,
+      plateNumber: card.plateNumber,
+      ownerName: card.ownerName,
+      type: 'reset',
+      changeMinutes: card.monthlyQuotaMinutes - balanceBefore,
+      balanceBefore,
+      balanceAfter: card.monthlyQuotaMinutes,
+      remark: '月度额度重置'
+    })
     return updated
   }
   return card
@@ -47,10 +64,23 @@ export function resetAllQuotasForNewMonth(currentDate?: string): { reset: number
       continue
     }
     if (isFirstOfMonth(now, card.lastResetDate)) {
+      const balanceBefore = card.remainingQuota
+      const newRemaining = card.monthlyQuotaMinutes
       cardStorage.update(card.id, {
-        remainingQuota: card.monthlyQuotaMinutes,
+        remainingQuota: newRemaining,
         usedQuotaThisMonth: 0,
         lastResetDate: dayjs(now).startOf('month').format('YYYY-MM-DD')
+      })
+      createQuotaTx({
+        cardId: card.id,
+        cardNo: card.cardNo,
+        plateNumber: card.plateNumber,
+        ownerName: card.ownerName,
+        type: 'reset',
+        changeMinutes: newRemaining - balanceBefore,
+        balanceBefore,
+        balanceAfter: newRemaining,
+        remark: '批量月度额度重置'
       })
       resetCount++
     } else {
@@ -67,11 +97,24 @@ export function issueMonthlyQuota(
 ): { success: boolean; card?: MonthlyCard; message: string } {
   if (additionalMinutes <= 0) return { success: false, message: '发放时长必须大于0' }
 
+  const balanceBefore = card.remainingQuota
+  const balanceAfter = balanceBefore + additionalMinutes
   const updated = {
     ...card,
-    remainingQuota: card.remainingQuota + additionalMinutes
+    remainingQuota: balanceAfter
   }
   cardStorage.update(card.id, updated)
+  createQuotaTx({
+    cardId: card.id,
+    cardNo: card.cardNo,
+    plateNumber: card.plateNumber,
+    ownerName: card.ownerName,
+    type: 'issue',
+    changeMinutes: additionalMinutes,
+    balanceBefore,
+    balanceAfter,
+    remark: '管理员发放额外额度'
+  })
   return { success: true, card: updated, message: `成功发放${additionalMinutes}分钟` }
 }
 
@@ -79,11 +122,13 @@ export function applyQuotaToBilling(
   card: MonthlyCard,
   segments: BillingSegment[],
   currentDate: string,
-  dryRun: boolean = false
+  dryRun: boolean = false,
+  extraTx: Partial<QuotaTransaction> = {}
 ): QuotaApplication {
   const activeCard = resetMonthlyQuotaIfNeeded(card, currentDate)
 
   let availableQuota = activeCard.remainingQuota
+  const balanceBefore = availableQuota
   let usedQuota = 0
   let quotaAppliedMinutes = 0
   let quotaDeductedAmount = 0
@@ -125,11 +170,27 @@ export function applyQuotaToBilling(
   const excessMinutes = filteredSegments.reduce((s, seg) => s + seg.durationMinutes, 0)
   const excessAmount = Number(filteredSegments.reduce((s, seg) => s + seg.amount, 0).toFixed(2))
 
+  let transactionId: string | undefined
+
   if (quotaAppliedMinutes > 0 && !dryRun) {
     cardStorage.update(activeCard.id, {
       remainingQuota: availableQuota,
       usedQuotaThisMonth: activeCard.usedQuotaThisMonth + usedQuota
     })
+    const tx = createQuotaTx({
+      cardId: activeCard.id,
+      cardNo: activeCard.cardNo,
+      plateNumber: activeCard.plateNumber,
+      ownerName: activeCard.ownerName,
+      type: 'use',
+      changeMinutes: usedQuota,
+      balanceBefore,
+      balanceAfter: availableQuota,
+      deductedAmount: quotaDeductedAmount,
+      remark: '出场额度抵扣',
+      ...extraTx
+    })
+    transactionId = tx.id
   }
 
   return {
@@ -140,7 +201,8 @@ export function applyQuotaToBilling(
     quotaDeductedAmount,
     excessMinutes,
     excessAmount,
-    finalSegments: filteredSegments
+    finalSegments: filteredSegments,
+    transactionId
   }
 }
 

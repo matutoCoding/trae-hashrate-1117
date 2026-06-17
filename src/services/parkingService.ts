@@ -12,7 +12,8 @@ import {
   recordStorage,
   cardStorage,
   detailStorage,
-  configStorage
+  configStorage,
+  quotaTransactionStorage
 } from '@/store/storage'
 import { calculateBilling, applyFreeDeduction } from './billingEngine'
 import {
@@ -25,6 +26,7 @@ import {
 export interface ExitBillingResult {
   record: ParkingRecord
   totalDuration: number
+  originalSegments: BillingSegment[]
   segments: BillingSegment[]
   grossAmount: number
   freeDeductedMinutes: number
@@ -52,6 +54,7 @@ export interface EntryResult {
 
 interface BillingPipeline {
   billing: ReturnType<typeof calculateBilling>
+  originalSegments: BillingSegment[]
   segmentsAfterFree: BillingSegment[]
   freeDeductedMinutes: number
   freeDeductedAmount: number
@@ -60,6 +63,7 @@ interface BillingPipeline {
   quotaDeductedAmount: number
   remainingQuota?: number
   activeCard?: MonthlyCard
+  quotaTransactionId?: string
   selfPayAmount: number
 }
 
@@ -70,6 +74,7 @@ function runBillingPipeline(
 ): BillingPipeline {
   const rates = rateStorage.getAll()
   const billing = calculateBilling(record.entryTime, exitTime, rates)
+  const originalSegments = billing.segments.map(s => ({ ...s }))
 
   const {
     segments: segmentsAfterFree,
@@ -82,6 +87,7 @@ function runBillingPipeline(
   let quotaDeductedAmount = 0
   let remainingQuota: number | undefined
   let activeCard: MonthlyCard | undefined
+  let quotaTransactionId: string | undefined
 
   if (record.vehicleType === 'monthly' && record.monthlyCardId) {
     const card = cardStorage.getAll().find(c => c.id === record.monthlyCardId)
@@ -92,6 +98,7 @@ function runBillingPipeline(
       quotaDeductedMinutes = quotaResult.quotaAppliedMinutes
       quotaDeductedAmount = quotaResult.quotaDeductedAmount
       remainingQuota = quotaResult.availableQuota
+      quotaTransactionId = quotaResult.transactionId
     }
   }
 
@@ -101,6 +108,7 @@ function runBillingPipeline(
 
   return {
     billing,
+    originalSegments,
     segmentsAfterFree,
     freeDeductedMinutes,
     freeDeductedAmount,
@@ -109,6 +117,7 @@ function runBillingPipeline(
     quotaDeductedAmount,
     remainingQuota,
     activeCard,
+    quotaTransactionId,
     selfPayAmount
   }
 }
@@ -128,10 +137,13 @@ function finalizeExit(
     entryTime: record.entryTime,
     exitTime,
     totalDuration: pipeline.billing.totalDuration,
+    originalSegments: pipeline.originalSegments,
     billedSegments: pipeline.finalSegments,
     grossAmount: pipeline.billing.grossAmount,
     freeDeduction: pipeline.freeDeductedAmount,
+    freeDeductedMinutes: pipeline.freeDeductedMinutes,
     quotaDeduction: pipeline.quotaDeductedAmount,
+    quotaDeductedMinutes: pipeline.quotaDeductedMinutes,
     selfPayAmount: pipeline.selfPayAmount,
     paymentMethod,
     paidAt: exitTime,
@@ -139,9 +151,17 @@ function finalizeExit(
   }
   const detail = detailStorage.add(detailData)
 
+  if (pipeline.quotaTransactionId) {
+    quotaTransactionStorage.update(pipeline.quotaTransactionId, {
+      recordId: record.id,
+      detailId: detail.id
+    } as any)
+  }
+
   recordStorage.update(record.id, {
     exitTime,
     durationMinutes: pipeline.billing.totalDuration,
+    originalSegments: pipeline.originalSegments,
     billedSegments: pipeline.finalSegments,
     totalAmount: pipeline.billing.grossAmount,
     freeMinutesUsed: pipeline.freeDeductedMinutes,
@@ -231,6 +251,7 @@ export function vehicleExit(
     result: {
       record: { ...record },
       totalDuration: pipeline.billing.totalDuration,
+      originalSegments: pipeline.originalSegments,
       segments: pipeline.finalSegments,
       grossAmount: pipeline.billing.grossAmount,
       freeDeductedMinutes: pipeline.freeDeductedMinutes,
@@ -277,6 +298,7 @@ export function confirmFreePass(
     result: {
       record: { ...record, exitTime, durationMinutes: pipeline.billing.totalDuration, billedSegments: pipeline.finalSegments, totalAmount: pipeline.billing.grossAmount },
       totalDuration: pipeline.billing.totalDuration,
+      originalSegments: pipeline.originalSegments,
       segments: pipeline.finalSegments,
       grossAmount: pipeline.billing.grossAmount,
       freeDeductedMinutes: pipeline.freeDeductedMinutes,

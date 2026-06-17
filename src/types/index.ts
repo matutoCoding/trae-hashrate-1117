@@ -11,6 +11,33 @@ export interface TimeRate {
   enabled: boolean
 }
 
+export interface BillingSegment {
+  startTime: string
+  endTime: string
+  durationMinutes: number
+  rateId: string
+  rateName: string
+  ratePerHour: number
+  amount: number
+}
+
+export interface QuotaTransaction {
+  id: string
+  cardId: string
+  cardNo: string
+  plateNumber: string
+  ownerName?: string
+  type: 'use' | 'issue' | 'reset'
+  changeMinutes: number
+  balanceBefore: number
+  balanceAfter: number
+  deductedAmount?: number
+  recordId?: string
+  detailId?: string
+  remark?: string
+  createdAt: string
+}
+
 export interface ParkingRecord {
   id: string
   plateNumber: string
@@ -19,6 +46,7 @@ export interface ParkingRecord {
   entryTime: string
   exitTime?: string
   durationMinutes?: number
+  originalSegments?: BillingSegment[]
   billedSegments?: BillingSegment[]
   totalAmount?: number
   freeMinutesUsed?: number
@@ -28,16 +56,6 @@ export interface ParkingRecord {
   paymentMethod?: 'cash' | 'wechat' | 'alipay' | 'card'
   paidAt?: string
   createdAt: string
-}
-
-export interface BillingSegment {
-  startTime: string
-  endTime: string
-  durationMinutes: number
-  rateId: string
-  rateName: string
-  ratePerHour: number
-  amount: number
 }
 
 export interface MonthlyCard {
@@ -67,10 +85,13 @@ export interface ConsumptionDetail {
   entryTime: string
   exitTime: string
   totalDuration: number
+  originalSegments: BillingSegment[]
   billedSegments: BillingSegment[]
   grossAmount: number
   freeDeduction: number
+  freeDeductedMinutes: number
   quotaDeduction: number
+  quotaDeductedMinutes: number
   selfPayAmount: number
   paymentMethod?: string
   paidAt?: string

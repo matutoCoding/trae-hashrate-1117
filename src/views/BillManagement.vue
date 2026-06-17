@@ -11,7 +11,7 @@
       <el-col :span="16">
         <el-card class="card-shadow">
           <template #header>
-            <div style="display: flex; justify-content: space-between; align-items: center">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px">
               <span style="font-weight: 600; font-size: 16px">已完成账单记录</span>
               <div class="action-bar" style="margin: 0">
                 <el-date-picker
@@ -19,14 +19,34 @@
                   type="month"
                   placeholder="选择月份"
                   value-format="YYYY-MM"
-                  style="width: 180px"
+                  style="width: 160px"
+                />
+                <el-input
+                  v-model="searchPlate"
+                  placeholder="车牌号"
+                  clearable
+                  :prefix-icon="'Search'"
+                  style="width: 140px"
+                  size="default"
+                />
+                <el-input
+                  v-model="searchCardNo"
+                  placeholder="月卡编号"
+                  clearable
+                  :prefix-icon="'CreditCard'"
+                  style="width: 140px"
+                  size="default"
                 />
               </div>
             </div>
           </template>
           <el-table :data="monthlyBills" stripe max-height="480">
             <el-table-column type="index" label="#" width="50" />
-            <el-table-column prop="plateNumber" label="车牌" width="110" />
+            <el-table-column prop="plateNumber" label="车牌" width="110">
+              <template #default="{ row }">
+                <span style="font-family: monospace; font-weight: 600">{{ row.plateNumber }}</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="cardNo" label="关联月卡" width="130">
               <template #default="{ row }">
                 <el-tag v-if="row.cardNo" type="warning" effect="light" size="small">
@@ -48,17 +68,17 @@
             </el-table-column>
             <el-table-column label="应收" width="80">
               <template #default="{ row }">
-                <span style="color: #909399">¥{{ row.grossAmount }}</span>
+                <span style="color: #909399">¥{{ row.grossAmount.toFixed(2) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="优惠" width="90">
               <template #default="{ row }">
-                <span class="negative">-¥{{ (row.freeDeduction + row.quotaDeduction).toFixed(0) }}</span>
+                <span class="negative">-¥{{ (row.freeDeduction + row.quotaDeduction).toFixed(2) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="实付" width="100">
               <template #default="{ row }">
-                <span style="color: #f56c6c; font-weight: 600">¥{{ row.selfPayAmount }}</span>
+                <span style="color: #f56c6c; font-weight: 600">¥{{ row.selfPayAmount.toFixed(2) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="支付" width="80">
@@ -69,15 +89,14 @@
                 <el-tag v-else type="warning" size="small" effect="light">免费</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="80" fixed="right">
+            <el-table-column label="操作" width="160" fixed="right">
               <template #default="{ row }">
-                <el-button type="primary" size="small" link @click="showDetail(row)">
-                  详情
-                </el-button>
+                <el-button type="primary" size="small" link @click="showReceipt(row)">小票</el-button>
+                <el-button type="success" size="small" link @click="showDetail(row)">详情</el-button>
               </template>
             </el-table-column>
           </el-table>
-          <el-empty v-if="monthlyBills.length === 0" description="本月暂无账单" />
+          <el-empty v-if="monthlyBills.length === 0" description="暂无账单数据" />
         </el-card>
       </el-col>
 
@@ -156,7 +175,11 @@
       </el-col>
     </el-row>
 
-    <el-dialog v-model="detailVisible" title="账单详细信息" width="560px" destroy-on-close>
+    <el-dialog v-model="receiptVisible" title="收费小票" width="620px" destroy-on-close>
+      <ParkingReceipt v-if="currentBill" :data="currentBill" />
+    </el-dialog>
+
+    <el-dialog v-model="detailVisible" title="账单详细信息" width="720px" destroy-on-close>
       <div v-if="currentBill">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="车牌号" :span="2">
@@ -171,30 +194,56 @@
           </el-descriptions-item>
         </el-descriptions>
 
-        <el-divider content-position="left">分段计费明细</el-divider>
+        <el-divider content-position="left">
+          <span style="color:#409eff; font-weight:600">① 原始分段计费（未抵扣）</span>
+        </el-divider>
         <div class="billing-detail-box">
-          <div v-for="(seg, idx) in currentBill.billedSegments" :key="idx" class="segment-row">
+          <div v-for="(seg, idx) in (currentBill.originalSegments || currentBill.billedSegments)" :key="'o'+idx" class="segment-row">
             <span class="segment-label">
               [{{ seg.rateName }}] {{ seg.startTime.slice(5, 16) }}~{{ seg.endTime.slice(5, 16) }}
               <span style="color: #909399">({{ seg.durationMinutes }}分 × ¥{{ seg.ratePerHour }}/时)</span>
             </span>
             <span class="segment-value">¥{{ seg.amount.toFixed(2) }}</span>
           </div>
-          <div class="segment-row" v-if="currentBill.freeDeduction > 0">
-            <span class="segment-label negative">免费时长抵扣</span>
-            <span class="segment-value negative">-¥{{ currentBill.freeDeduction.toFixed(2) }}</span>
-          </div>
-          <div class="segment-row" v-if="currentBill.quotaDeduction > 0">
-            <span class="segment-label negative">月卡额度抵扣</span>
-            <span class="segment-value negative">-¥{{ currentBill.quotaDeduction.toFixed(2) }}</span>
-          </div>
           <div class="total-row">
-            <span>应付金额</span>
-            <span style="color: #f56c6c">¥{{ currentBill.selfPayAmount.toFixed(2) }}</span>
+            <span>原始合计</span>
+            <span>¥{{ currentBill.grossAmount.toFixed(2) }}</span>
           </div>
         </div>
 
-        <el-descriptions :column="2" border size="small">
+        <el-divider content-position="left">
+          <span style="color:#67c23a; font-weight:600">② 抵扣明细</span>
+        </el-divider>
+        <div class="billing-detail-box">
+          <div class="segment-row" v-if="currentBill.freeDeduction > 0">
+            <span class="segment-label negative">
+              免费时长抵扣（{{ currentBill.freeDeductedMinutes || 0 }}分钟）
+            </span>
+            <span class="segment-value negative">-¥{{ currentBill.freeDeduction.toFixed(2) }}</span>
+          </div>
+          <div class="segment-row" v-if="currentBill.quotaDeduction > 0">
+            <span class="segment-label negative">
+              月卡额度抵扣（{{ currentBill.quotaDeductedMinutes || 0 }}分钟）
+            </span>
+            <span class="segment-value negative">-¥{{ currentBill.quotaDeduction.toFixed(2) }}</span>
+          </div>
+          <div class="segment-row" v-if="currentBill.freeDeduction === 0 && currentBill.quotaDeduction === 0">
+            <span class="segment-label" style="color:#909399">无抵扣</span>
+            <span class="segment-value" style="color:#909399">¥0.00</span>
+          </div>
+        </div>
+
+        <el-divider content-position="left">
+          <span style="color:#f56c6c; font-weight:600">③ 最终实付</span>
+        </el-divider>
+        <div style="background:#f5f7fa; padding: 12px; border-radius: 6px">
+          <div style="display:flex; justify-content: space-between; align-items: center">
+            <span style="font-size: 15px; font-weight: 600">应付金额</span>
+            <span style="font-size: 22px; color: #f56c6c; font-weight: 700">¥{{ currentBill.selfPayAmount.toFixed(2) }}</span>
+          </div>
+        </div>
+
+        <el-descriptions :column="2" border size="small" style="margin-top: 12px">
           <el-descriptions-item label="支付方式">
             <el-tag v-if="currentBill.paymentMethod === 'wechat'" type="success" effect="light">微信支付</el-tag>
             <el-tag v-else-if="currentBill.paymentMethod === 'alipay'" type="primary" effect="light">支付宝</el-tag>
@@ -204,10 +253,6 @@
           <el-descriptions-item label="支付时间">{{ currentBill.paidAt || '-' }}</el-descriptions-item>
         </el-descriptions>
       </div>
-      <template #footer>
-        <el-button @click="detailVisible = false">关闭</el-button>
-        <el-button type="primary">打印小票</el-button>
-      </template>
     </el-dialog>
   </div>
 </template>
@@ -217,15 +262,28 @@ import { ref, computed, onMounted } from 'vue'
 import { detailStorage } from '@/store/storage'
 import type { ConsumptionDetail } from '@/types'
 import dayjs from 'dayjs'
+import ParkingReceipt from '@/components/ParkingReceipt.vue'
 
 const month = ref(dayjs().format('YYYY-MM'))
+const searchPlate = ref('')
+const searchCardNo = ref('')
 const details = ref<ConsumptionDetail[]>([])
+const receiptVisible = ref(false)
 const detailVisible = ref(false)
 const currentBill = ref<ConsumptionDetail | null>(null)
 
 const monthlyBills = computed(() => {
   const prefix = month.value + '-'
-  return details.value.filter(d => d.paidAt && d.paidAt.startsWith(prefix))
+  let list = details.value.filter(d => d.paidAt && d.paidAt.startsWith(prefix))
+  if (searchPlate.value) {
+    const kw = searchPlate.value.toLowerCase()
+    list = list.filter(d => d.plateNumber.toLowerCase().includes(kw))
+  }
+  if (searchCardNo.value) {
+    const kw = searchCardNo.value.toLowerCase()
+    list = list.filter(d => d.cardNo && d.cardNo.toLowerCase().includes(kw))
+  }
+  return list
 })
 
 const summary = computed(() => {
@@ -260,6 +318,10 @@ function formatDuration(minutes: number): string {
 function showDetail(row: ConsumptionDetail) {
   currentBill.value = row
   detailVisible.value = true
+}
+function showReceipt(row: ConsumptionDetail) {
+  currentBill.value = row
+  receiptVisible.value = true
 }
 
 function loadData() {
