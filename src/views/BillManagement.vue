@@ -153,7 +153,53 @@
           </div>
 
           <el-table :data="reconcileRows" stripe max-height="560" :row-class-name="reconcileRowClass">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div style="padding: 8px 16px; background:#fafbfc; border-left: 3px solid #409eff; margin-left: 40px; border-radius: 4px">
+                  <div style="display:flex; justify-content: space-between; margin-bottom: 8px">
+                    <strong style="color:#409eff">原始计费分段（未抵扣）</strong>
+                    <el-button size="small" type="primary" link @click="showReceiptFromReconcile(row)">查看完整小票</el-button>
+                  </div>
+                  <el-table :data="row.originalSegments || []" size="small" style="margin-bottom: 12px">
+                    <el-table-column prop="rateName" label="费率档位" width="120" />
+                    <el-table-column label="时间段" width="160">
+                      <template #default="{ r }">{{ r.row.startTime.slice(5, 16) }} 至 {{ r.row.endTime.slice(5, 16) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="durationMinutes" label="时长(分)" width="80" />
+                    <el-table-column prop="ratePerHour" label="费率(元/时)" width="100" />
+                    <el-table-column label="原始金额" width="100">
+                      <template #default="{ r }"><span style="color:#f56c6c; font-weight:600">¥{{ r.row.amount.toFixed(2) }}</span></template>
+                    </el-table-column>
+                  </el-table>
+                  <el-descriptions :column="4" border size="small">
+                    <el-descriptions-item label="应收(原始合计)">
+                      ¥{{ (row.grossAmount ?? 0).toFixed(2) }}
+                      <span v-if="row.grossMismatch" style="color:#f56c6c; margin-left:4px">⚠不一致</span>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="免费抵扣">
+                      -¥{{ (row.freeDeduction ?? 0).toFixed(2) }}
+                      <div style="font-size:11px; color:#909399">({{ row.freeDeductedMinutes || 0 }}分)</div>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="月卡额度抵扣">
+                      -¥{{ (row.quotaDeduction ?? 0).toFixed(2) }}
+                      <div style="font-size:11px; color:#909399">({{ row.quotaDeductedMinutes || 0 }}分)</div>
+                      <div v-if="row.quotaMinutesMismatch || row.quotaAmountMismatch" style="font-size:11px; color:#f56c6c">⚠流水对不上</div>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="实付">
+                      <strong style="color:#f56c6c; font-size:16px">¥{{ (row.selfPayAmount ?? 0).toFixed(2) }}</strong>
+                      <span v-if="row.payMismatch" style="color:#f56c6c; margin-left:4px">⚠不一致</span>
+                    </el-descriptions-item>
+                  </el-descriptions>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column type="index" label="#" width="50" />
+            <el-table-column label="一致性" width="90">
+              <template #default="{ row }">
+                <el-tag v-if="row.allMatch" type="success" effect="light" size="small">✓一致</el-tag>
+                <el-tag v-else type="danger" effect="light" size="small">✗异常</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="plateNumber" label="车牌" width="100">
               <template #default="{ row }">
                 <span style="font-family: monospace; font-weight: 600">{{ row.plateNumber }}</span>
@@ -168,7 +214,9 @@
               </template>
             </el-table-column>
             <el-table-column label="时长(分)" width="80">
-              <template #default="{ row }">{{ row.durationMinutes ?? row.totalDuration ?? '-' }}</template>
+              <template #default="{ row }">
+                <span :style="{ color: row.durationMismatch ? '#f56c6c' : '#303133', fontWeight: row.durationMismatch ? '600' : 'normal' }">{{ row.totalDuration ?? '-' }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="应收" width="80">
               <template #default="{ row }">
@@ -181,15 +229,18 @@
                 <div v-if="row.freeDeductedMinutes" style="font-size:11px; color:#909399">{{ row.freeDeductedMinutes }}分</div>
               </template>
             </el-table-column>
-            <el-table-column label="额度抵扣" width="90">
+            <el-table-column label="额度抵扣" width="100">
               <template #default="{ row }">
-                <span class="negative">-¥{{ (row.quotaDeduction ?? 0).toFixed(2) }}</span>
-                <div v-if="row.quotaDeductedMinutes" style="font-size:11px; color:#909399">{{ row.quotaDeductedMinutes }}分</div>
+                <span class="negative" :style="{ fontWeight: (row.quotaMinutesMismatch || row.quotaAmountMismatch) ? '700' : 'normal' }">-¥{{ (row.quotaDeduction ?? 0).toFixed(2) }}</span>
+                <div style="font-size:11px; color:#909399">
+                  {{ row.quotaDeductedMinutes || 0 }}分
+                  <span v-if="row.quotaMinutesMismatch || row.quotaAmountMismatch" style="color:#f56c6c">⚠</span>
+                </div>
               </template>
             </el-table-column>
             <el-table-column label="实付" width="90">
               <template #default="{ row }">
-                <span :style="{ color: row.payMismatch ? '#f56c6c' : '#f56c6c', fontWeight: row.payMismatch ? '700' : '600', fontSize: row.payMismatch ? '15px' : '14px' }">¥{{ (row.selfPayAmount ?? 0).toFixed(2) }}</span>
+                <span :style="{ color: '#f56c6c', fontWeight: row.payMismatch ? '700' : '600', fontSize: row.payMismatch ? '15px' : '14px' }">¥{{ (row.selfPayAmount ?? 0).toFixed(2) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="额度流水" width="120">
@@ -201,10 +252,17 @@
                 <span v-else style="color:#c0c4cc">-</span>
               </template>
             </el-table-column>
-            <el-table-column label="一致性" width="90">
+            <el-table-column label="异常项" min-width="130">
               <template #default="{ row }">
-                <el-tag v-if="row.allMatch" type="success" effect="light" size="small">一致</el-tag>
-                <el-tag v-else type="danger" effect="light" size="small">异常</el-tag>
+                <template v-if="!row.allMatch">
+                  <el-tag v-if="row.grossMismatch" type="danger" size="small" effect="plain" style="margin:2px">应收</el-tag>
+                  <el-tag v-if="row.durationMismatch" type="danger" size="small" effect="plain" style="margin:2px">时长</el-tag>
+                  <el-tag v-if="row.payMismatch" type="danger" size="small" effect="plain" style="margin:2px">实付</el-tag>
+                  <el-tag v-if="row.quotaMinutesMismatch" type="warning" size="small" effect="plain" style="margin:2px">额分</el-tag>
+                  <el-tag v-if="row.quotaAmountMismatch" type="warning" size="small" effect="plain" style="margin:2px">额金</el-tag>
+                  <el-tag v-if="row.missingQuotaTx" type="danger" size="small" effect="plain" style="margin:2px">缺流水</el-tag>
+                </template>
+                <span v-else style="color:#67c23a; font-size:12px">✓ 正常</span>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="100" fixed="right">
@@ -294,30 +352,63 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="batchReceiptVisible" title="对账单汇总" width="800px" destroy-on-close>
+    <el-dialog v-model="batchReceiptVisible" title="对账单汇总（含原始分段）" width="960px" destroy-on-close>
       <div v-if="exportData.rows.length > 0" style="padding: 0 0 16px 0">
-        <el-descriptions :column="3" border size="small">
+        <el-descriptions :column="4" border size="small">
           <el-descriptions-item label="记录数">{{ exportData.rows.length }} 笔</el-descriptions-item>
           <el-descriptions-item label="应收合计">¥{{ exportData.grossTotal.toFixed(2) }}</el-descriptions-item>
-          <el-descriptions-item label="实收合计">¥{{ exportData.payTotal.toFixed(2) }}</el-descriptions-item>
-          <el-descriptions-item label="免费抵扣">-¥{{ exportData.freeTotal.toFixed(2) }}</el-descriptions-item>
-          <el-descriptions-item label="额度抵扣">-¥{{ exportData.quotaTotal.toFixed(2) }}</el-descriptions-item>
-          <el-descriptions-item label="异常笔数">
-            <span :style="{ color: exportData.mismatchCount > 0 ? '#f56c6c' : '#67c23a', fontWeight: '600' }">
-              {{ exportData.mismatchCount }} 笔
-            </span>
+          <el-descriptions-item label="免费抵扣合计">-¥{{ exportData.freeTotal.toFixed(2) }}</el-descriptions-item>
+          <el-descriptions-item label="实收合计" :span="2">
+            <strong style="color:#f56c6c; font-size:18px">¥{{ exportData.payTotal.toFixed(2) }}</strong>
           </el-descriptions-item>
+          <el-descriptions-item label="月卡额度抵扣合计" :span="2">-¥{{ exportData.quotaTotal.toFixed(2) }}</el-descriptions-item>
         </el-descriptions>
 
-        <el-table :data="exportData.rows" stripe max-height="400" style="margin-top: 12px">
-          <el-table-column prop="plateNumber" label="车牌" width="100" />
-          <el-table-column label="入→出" width="210">
+        <el-table :data="exportData.rows" stripe max-height="480" style="margin-top: 12px">
+          <el-table-column type="expand">
             <template #default="{ row }">
-              <div style="font-size:12px">{{ row.entryTime?.slice(5) || '-' }} → {{ row.exitTime?.slice(5) || '-' }}</div>
+              <div style="padding: 8px 16px; background:#f5f7fa; border-left: 3px solid #67c23a; margin-left: 40px; border-radius: 4px">
+                <div style="font-weight: 600; color:#67c23a; margin-bottom: 6px">原始分段明细</div>
+                <el-table :data="row.originalSegments || []" size="small" style="margin-bottom: 8px">
+                  <el-table-column prop="rateName" label="费率档位" width="110" />
+                  <el-table-column label="时间段" width="150">
+                    <template #default="{ r }">
+                      {{ r.row.startTime.slice(5, 16) }} ~ {{ r.row.endTime.slice(5, 16) }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="durationMinutes" label="时长(分)" width="70" />
+                  <el-table-column prop="ratePerHour" label="费率(元/时)" width="90" />
+                  <el-table-column label="原始金额" width="90">
+                    <template #default="{ r }">¥{{ r.row.amount.toFixed(2) }}</template>
+                  </el-table-column>
+                </el-table>
+                <div style="display:flex; gap:24px; font-size:13px">
+                  <span>应收合计: <strong>¥{{ row.grossAmount.toFixed(2) }}</strong></span>
+                  <span class="negative">免费抵扣: -¥{{ row.freeDeduction.toFixed(2) }} ({{ row.freeDeductedMinutes }}分)</span>
+                  <span class="negative">额度抵扣: -¥{{ row.quotaDeduction.toFixed(2) }} ({{ row.quotaDeductedMinutes }}分)</span>
+                  <span class="positive">实付: ¥{{ row.selfPayAmount.toFixed(2) }}</span>
+                </div>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column label="时长" width="70">
-            <template #default="{ row }">{{ row.totalDuration }}分</template>
+          <el-table-column label="序号" type="index" width="60" />
+          <el-table-column prop="plateNumber" label="车牌" width="100" />
+          <el-table-column prop="cardNo" label="月卡号" width="120">
+            <template #default="{ row }">
+              <el-tag v-if="row.cardNo" type="warning" size="small" effect="light">{{ row.cardNo }}</el-tag>
+              <span v-else style="color:#c0c4cc">临时</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="入→出" width="180">
+            <template #default="{ row }">
+              <div style="font-size:12px">
+                <div>入: {{ row.entryTime?.slice(5) || '-' }}</div>
+                <div>出: {{ row.exitTime?.slice(5) || '-' }}</div>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="时长(分)" width="70">
+            <template #default="{ row }">{{ row.totalDuration }}</template>
           </el-table-column>
           <el-table-column label="应收" width="80">
             <template #default="{ row }">¥{{ row.grossAmount.toFixed(2) }}</template>
@@ -329,11 +420,14 @@
             <template #default="{ row }">-¥{{ row.quotaDeduction.toFixed(2) }}</template>
           </el-table-column>
           <el-table-column label="实收" width="80">
-            <template #default="{ row }">¥{{ row.selfPayAmount.toFixed(2) }}</template>
-          </el-table-column>
-          <el-table-column label="状态" width="70">
             <template #default="{ row }">
-              <el-tag :type="row.allMatch ? 'success' : 'danger'" effect="light" size="small">{{ row.allMatch ? '一致' : '异常' }}</el-tag>
+              <span style="color:#f56c6c; font-weight:600">¥{{ row.selfPayAmount.toFixed(2) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="一致性" width="80">
+            <template #default="{ row }">
+              <el-tag v-if="row.allMatch" type="success" effect="light" size="small">一致</el-tag>
+              <el-tag v-else type="danger" effect="light" size="small">异常</el-tag>
             </template>
           </el-table-column>
         </el-table>
@@ -440,7 +534,11 @@ function showReceiptFromReconcile(row: any) {
   }
 }
 
-function buildReconcileRow(detail: ConsumptionDetail, record: ParkingRecord | undefined, quotaTx: QuotaTransaction | undefined) {
+function buildReconcileRow(
+  detail: ConsumptionDetail,
+  record: ParkingRecord | undefined,
+  quotaTx: QuotaTransaction | undefined
+) {
   const recordGross = record?.totalAmount
   const recordDuration = record?.durationMinutes
   const detailGross = detail.grossAmount
@@ -450,13 +548,33 @@ function buildReconcileRow(detail: ConsumptionDetail, record: ParkingRecord | un
   const grossMismatch = recordGross !== undefined && Math.abs(recordGross - detailGross) > 0.01
   const durationMismatch = recordDuration !== undefined && recordDuration !== detailDuration
   const payMismatch = Math.abs(detail.selfPayAmount - expectedPay) > 0.01
-  const allMatch = !grossMismatch && !durationMismatch && !payMismatch
+
+  let quotaMinutesMismatch = false
+  let quotaAmountMismatch = false
+  let missingQuotaTx = false
+  if ((detail.quotaDeductedMinutes ?? 0) > 0 || (detail.quotaDeduction ?? 0) > 0.001) {
+    if (!quotaTx) {
+      missingQuotaTx = true
+    } else {
+      quotaMinutesMismatch = Math.abs(Math.abs(quotaTx.changeMinutes) - (detail.quotaDeductedMinutes || 0)) > 0
+      quotaAmountMismatch = Math.abs((quotaTx.deductedAmount || 0) - (detail.quotaDeduction || 0)) > 0.01
+    }
+  }
+
+  const allMatch =
+    !grossMismatch &&
+    !durationMismatch &&
+    !payMismatch &&
+    !quotaMinutesMismatch &&
+    !quotaAmountMismatch &&
+    !missingQuotaTx
 
   return {
     plateNumber: detail.plateNumber,
+    cardNo: detail.cardNo,
     entryTime: detail.entryTime,
     exitTime: detail.exitTime,
-    totalDuration: detail.totalDuration,
+    totalDuration: detailDuration,
     durationMinutes: recordDuration,
     grossAmount: detailGross,
     freeDeduction: detail.freeDeduction,
@@ -464,10 +582,20 @@ function buildReconcileRow(detail: ConsumptionDetail, record: ParkingRecord | un
     quotaDeduction: detail.quotaDeduction,
     quotaDeductedMinutes: detail.quotaDeductedMinutes,
     selfPayAmount: detail.selfPayAmount,
-    quotaTx: quotaTx ? { changeMinutes: Math.abs(quotaTx.changeMinutes), balanceAfter: quotaTx.balanceAfter } : null,
+    originalSegments: (detail.originalSegments || detail.billedSegments || []) as any[],
+    quotaTx: quotaTx
+      ? {
+          changeMinutes: Math.abs(quotaTx.changeMinutes),
+          balanceAfter: quotaTx.balanceAfter,
+          deductedAmount: quotaTx.deductedAmount || 0
+        }
+      : null,
     grossMismatch,
     durationMismatch,
     payMismatch,
+    quotaMinutesMismatch,
+    quotaAmountMismatch,
+    missingQuotaTx,
     allMatch,
     detail
   }

@@ -196,9 +196,10 @@ export const quotaTransactionStorage = {
   saveAll(list: QuotaTransaction[]): void {
     writeData(STORAGE_KEYS.QUOTA_TRANSACTIONS, list)
   },
-  add(tx: Omit<QuotaTransaction, 'id'>): QuotaTransaction {
+  add(tx: Omit<QuotaTransaction, 'id' | 'createdAt'>): QuotaTransaction {
     const list = this.getAll()
-    const newTx: QuotaTransaction = { ...tx, id: generateId() }
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19)
+    const newTx: QuotaTransaction = { ...tx, id: generateId(), createdAt: (tx as any).createdAt || now }
     list.push(newTx)
     this.saveAll(list)
     return newTx
